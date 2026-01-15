@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^13.2.2",
+    "hash-wasm": "^4.12.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

@@ -12,6 +12,7 @@ function App() {
 
   // Auto-lock Hook
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isBlurred, setIsBlurred] = useState(false);
 
   useEffect(() => {
     const token = StorageService.getToken();
@@ -27,10 +28,30 @@ function App() {
 
     const resetTimer = () => {
       clearTimeout(timeout);
+      setIsBlurred(false); // Unblur on activity if we are not locked yet
       timeout = setTimeout(() => {
         console.log("Auto-locking due to inactivity");
         onLogout();
       }, LOCK_TIME);
+    };
+
+    // Smart Privacy Triggers
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setIsBlurred(true);
+      } else {
+        // Optional: Require click or something to unblur? 
+        // For now, let's keep it blurred until user interacts
+      }
+    };
+
+    const handleWindowBlur = () => {
+      setIsBlurred(true);
+    };
+
+    const handleWindowFocus = () => {
+      // We could auto-unblur, or wait for interaction
+      // setIsBlurred(false); 
     };
 
     // Start timer
@@ -39,9 +60,17 @@ function App() {
     // Listen for activity
     events.forEach(event => window.addEventListener(event, resetTimer));
 
+    // Privacy Listeners
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
+
     return () => {
       clearTimeout(timeout);
       events.forEach(event => window.removeEventListener(event, resetTimer));
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, [isAuthenticated]);
 
@@ -74,8 +103,15 @@ function App() {
 
   return (
     <>
-      {view === 'auth' && <Auth onLogin={onLogin} />}
-      {view === 'vault' && <Vault onLogout={onLogout} />}
+      {isBlurred && isAuthenticated && (
+        <div className="privacy-overlay" onClick={() => setIsBlurred(false)}>
+          Click to Reveal
+        </div>
+      )}
+      <div className={isBlurred && isAuthenticated ? 'privacy-blur' : ''} style={{ transition: 'filter 0.3s' }}>
+        {view === 'auth' && <Auth onLogin={onLogin} />}
+        {view === 'vault' && <Vault onLogout={onLogout} />}
+      </div>
     </>
   );
 }

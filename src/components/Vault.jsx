@@ -1,27 +1,74 @@
 import { useState, useEffect } from 'react';
 import * as StorageService from '../services/storage';
+import * as ApiService from '../services/api';
 import CredentialModal from './CredentialModal';
+import PasswordHealth from './PasswordHealth';
+import ShareModal from './ShareModal';
+import ThemeSwitcher from './ThemeSwitcher';
 
 export default function Vault({ onLogout }) {
     const [items, setItems] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [showHealth, setShowHealth] = useState(false);
     const [editingItem, setEditingItem] = useState(null);
+    const [shareItem, setShareItem] = useState(null); // Item being shared
+    const [shares, setShares] = useState([]); // Incoming shares
 
     useEffect(() => {
         loadItems();
+        checkShares();
     }, []);
 
-    const loadItems = async () => {
+    const checkShares = async () => {
         try {
-            const vaultBlob = await StorageService.loadVault();
-            if (vaultBlob) {
-                const blob = vaultBlob;
-                const decryptedItems = await StorageService.unlockVault(blob);
-                setItems(decryptedItems || []);
-            }
+            const token = StorageService.getToken();
+            const pendingShares = await ApiService.getShares(token);
+            setShares(pendingShares || []);
         } catch (e) {
-            console.error("Failed to load vault", e);
+            console.error("Failed to load shares", e);
+        }
+    };
+
+    const handleAcceptShare = async (share) => {
+        try {
+            const token = StorageService.getToken();
+
+            // 1. Get My Encrypted Private Key
+            const { encryptedPrivateKey } = await ApiService.getEncryptedPrivateKey(token);
+            // encryptedPrivateKey is JSON string {iv, ciphertext}
+            const encryptedPrivKeyObj = JSON.parse(encryptedPrivateKey);
+
+            // 2. Decrypt Private Key using Master Key
+            const masterKey = StorageService.getMasterKey();
+            if (!masterKey) throw new Error("Master Key not in memory. Please relogin.");
+
+            const privateKeyHex = await CryptoService.decrypt(
+                encryptedPrivKeyObj.ciphertext,
+                encryptedPrivKeyObj.iv,
+                masterKey
+            );
+            const privateKey = await CryptoService.importKey(privateKeyHex, 'private');
+
+            // 3. Decrypt the Share
+            const decryptedItemJson = await CryptoService.decryptRSA(share.encrypted_data, privateKey);
+            const newItem = JSON.parse(decryptedItemJson);
+
+            // 4. Add to Vault (giving it a new ID to avoid collisions)
+            const itemToAdd = { ...newItem, id: crypto.randomUUID(), title: `${newItem.title} (Shared)` };
+
+            const updatedItems = [...items, itemToAdd];
+            setItems(updatedItems);
+            await StorageService.saveVault(updatedItems);
+
+            // 5. Delete Share
+            await ApiService.deleteShare(token, share.id);
+            setShares(shares.filter(s => s.id !== share.id));
+
+            alert(`Accepted "${newItem.title}"`);
+        } catch (e) {
+            console.error(e);
+            alert("Failed to accept share: " + e.message);
         }
     };
 
@@ -36,6 +83,31 @@ export default function Vault({ onLogout }) {
             return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
         } catch {
             return '';
+        }
+    };
+
+    const handleRegisterPasskey = async () => {
+        if (!confirm("Add this device as a Passkey?")) return;
+
+        try {
+            const token = StorageService.getToken();
+
+            // 1. Get options
+            const options = await ApiService.getWebAuthnRegOptions(token);
+
+            // 2. Create credential
+            const { startRegistration } = await import('@simplewebauthn/browser');
+            const attResp = await startRegistration(options);
+
+            // 3. Verify
+            const verification = await ApiService.verifyWebAuthnReg(token, attResp);
+
+            if (verification.verified) {
+                alert("Passkey registered successfully! You can now use it to login.");
+            }
+        } catch (error) {
+            console.error(error);
+            alert("Failed to register Passkey: " + error.message);
         }
     };
 
@@ -104,10 +176,19 @@ export default function Vault({ onLogout }) {
         <div style={{ paddingBottom: '3rem' }}>
             <header style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginBottom: '3rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <img src="/src/assets/logo.png" alt="Keyra" style={{ height: '50px' }} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <img src="/src/assets/logo.png" alt="Keyra" style={{ height: '50px' }} />
+                        <ThemeSwitcher />
+                    </div>
                     <div style={{ display: 'flex', gap: '1rem' }}>
                         <button onClick={handleExport} style={{ background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>
                             ↓ Backup
+                        </button>
+                        <button onClick={handleRegisterPasskey} style={{ background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>
+                            🔑 Add Passkey
+                        </button>
+                        <button onClick={() => setShowHealth(true)} style={{ background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}>
+                            🏥 Check Health
                         </button>
                         <button onClick={handleLogout} style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.1)', padding: '0.6rem 1.2rem', borderRadius: '12px', cursor: 'pointer', transition: 'all 0.2s' }}>
                             Lock Vault
@@ -127,6 +208,30 @@ export default function Vault({ onLogout }) {
                     <span style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', opacity: 0.5 }}>🔍</span>
                 </div>
             </header>
+
+            {shares.length > 0 && (
+                <div style={{ marginBottom: '2rem', padding: '1.5rem', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '16px' }}>
+                    <h3 style={{ margin: '0 0 1rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#6ee7b7' }}>
+                        <span>📥</span> Incoming Shares ({shares.length})
+                    </h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem' }}>
+                        {shares.map(share => (
+                            <div key={share.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '1rem', borderRadius: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div>
+                                    <div style={{ fontSize: '0.9rem', color: '#fff' }}>From: <strong>{share.sender_username}</strong></div>
+                                    <div style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.5)' }}>{new Date(share.created_at).toLocaleDateString()}</div>
+                                </div>
+                                <button
+                                    onClick={() => handleAcceptShare(share)}
+                                    style={{ background: '#10b981', color: '#fff', border: 'none', padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem' }}
+                                >
+                                    Accept
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             <div className="vault-grid">
                 {filteredItems.map(item => (
@@ -149,6 +254,13 @@ export default function Vault({ onLogout }) {
                                 style={{ flex: 1, padding: '0.8rem', background: 'rgba(99, 102, 241, 0.15)', border: '1px solid rgba(99, 102, 241, 0.3)', color: '#c7d2fe', borderRadius: '10px', cursor: 'pointer', fontWeight: '500', transition: 'background 0.2s' }}
                             >
                                 Copy
+                            </button>
+                            <button
+                                onClick={() => setShareItem(item)}
+                                style={{ padding: '0.8rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
+                                title="Share"
+                            >
+                                📤
                             </button>
                             <button
                                 onClick={() => openEditModal(item)}
@@ -192,6 +304,8 @@ export default function Vault({ onLogout }) {
                 onSave={handleSaveItem}
                 initialData={editingItem}
             />
+            {showHealth && <PasswordHealth items={items} onClose={() => setShowHealth(false)} />}
+            <ShareModal isOpen={!!shareItem} onClose={() => setShareItem(null)} item={shareItem} />
         </div>
     );
 }
