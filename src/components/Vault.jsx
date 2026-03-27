@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as StorageService from '../services/storage';
 import * as ApiService from '../services/api';
+import * as CryptoService from '../services/crypto';
 import CredentialModal from './CredentialModal';
 import PasswordHealth from './PasswordHealth';
 import ShareModal from './ShareModal';
@@ -8,6 +9,7 @@ import ThemeSwitcher from './ThemeSwitcher';
 
 export default function Vault({ onLogout }) {
     const [items, setItems] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [showHealth, setShowHealth] = useState(false);
@@ -16,9 +18,26 @@ export default function Vault({ onLogout }) {
     const [shares, setShares] = useState([]); // Incoming shares
 
     useEffect(() => {
-        loadItems();
-        checkShares();
+        const load = async () => {
+            setLoading(true);
+            await Promise.all([loadItems(), checkShares()]);
+            // Small artificial delay to show off the skeleton animation (optional)
+            setTimeout(() => setLoading(false), 800);
+        };
+        load();
     }, []);
+
+    const loadItems = async () => {
+        try {
+            const vaultBlob = await StorageService.loadVault();
+            if (vaultBlob) {
+                const decryptedItems = await StorageService.unlockVault(vaultBlob);
+                setItems(decryptedItems || []);
+            }
+        } catch (e) {
+            console.error("Failed to load vault", e);
+        }
+    };
 
     const checkShares = async () => {
         try {
@@ -234,68 +253,87 @@ export default function Vault({ onLogout }) {
             )}
 
             <div className="vault-grid">
-                {filteredItems.map(item => (
-                    <div key={item.id} className="glass-panel fade-in" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', height: '100%', boxSizing: 'border-box' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem', cursor: 'pointer' }} onClick={() => openEditModal(item)}>
-                            {item.url ? (
-                                <img src={getFavicon(item.url)} alt="" style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'var(--glass-border)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }} />
-                            ) : (
-                                <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}>🔑</div>
-                            )}
-                            <div style={{ overflow: 'hidden' }}>
-                                <div style={{ fontWeight: '600', fontSize: '1.1rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</div>
-                                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.username}</div>
+                {loading ? (
+                    // Skeleton Loading State
+                    Array.from({ length: 6 }).map((_, i) => (
+                        <div key={i} className={`glass-panel fade-in stagger-${i % 5 + 1}`} style={{ padding: '1.5rem', height: '200px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                                <div className="skeleton" style={{ width: '40px', height: '40px', borderRadius: '50%' }}></div>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                    <div className="skeleton" style={{ width: '80%', height: '20px' }}></div>
+                                    <div className="skeleton" style={{ width: '50%', height: '14px' }}></div>
+                                </div>
+                            </div>
+                            <div className="skeleton" style={{ width: '100%', height: '40px', marginTop: 'auto', borderRadius: '10px' }}></div>
+                        </div>
+                    ))
+                ) : (
+                    // Actual Items
+                    filteredItems.map((item, index) => (
+                        <div key={item.id} className={`glass-panel fade-in clickable-card stagger-${index % 5 + 1}`} style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', height: '100%', boxSizing: 'border-box' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem', cursor: 'pointer' }} onClick={() => openEditModal(item)}>
+                                {item.url ? (
+                                    <img src={getFavicon(item.url)} alt="" style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'var(--glass-border)', boxShadow: '0 4px 12px rgba(0,0,0,0.2)' }} />
+                                ) : (
+                                    <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--primary), var(--accent))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2rem' }}>🔑</div>
+                                )}
+                                <div style={{ overflow: 'hidden' }}>
+                                    <div style={{ fontWeight: '600', fontSize: '1.1rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.username}</div>
+                                </div>
+                            </div>
+
+                            <div style={{ marginTop: 'auto', display: 'flex', gap: '0.8rem' }}>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); copyToClipboard(item.password); }}
+                                    style={{ flex: 1, padding: '0.8rem', background: 'rgba(99, 102, 241, 0.15)', border: '1px solid rgba(99, 102, 241, 0.3)', color: '#c7d2fe', borderRadius: '10px', cursor: 'pointer', fontWeight: '500', transition: 'background 0.2s' }}
+                                >
+                                    Copy
+                                </button>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); setShareItem(item); }}
+                                    style={{ padding: '0.8rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
+                                    title="Share"
+                                >
+                                    📤
+                                </button>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); openEditModal(item); }}
+                                    style={{ padding: '0.8rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
+                                >
+                                    Edit
+                                </button>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }}
+                                    style={{ padding: '0.8rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#fca5a5', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
+                                >
+                                    Del
+                                </button>
                             </div>
                         </div>
+                    ))
+                )}
 
-                        <div style={{ marginTop: 'auto', display: 'flex', gap: '0.8rem' }}>
-                            <button
-                                onClick={() => copyToClipboard(item.password)}
-                                style={{ flex: 1, padding: '0.8rem', background: 'rgba(99, 102, 241, 0.15)', border: '1px solid rgba(99, 102, 241, 0.3)', color: '#c7d2fe', borderRadius: '10px', cursor: 'pointer', fontWeight: '500', transition: 'background 0.2s' }}
-                            >
-                                Copy
-                            </button>
-                            <button
-                                onClick={() => setShareItem(item)}
-                                style={{ padding: '0.8rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
-                                title="Share"
-                            >
-                                📤
-                            </button>
-                            <button
-                                onClick={() => openEditModal(item)}
-                                style={{ padding: '0.8rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
-                            >
-                                Edit
-                            </button>
-                            <button
-                                onClick={() => deleteItem(item.id)}
-                                style={{ padding: '0.8rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#fca5a5', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
-                            >
-                                Del
-                            </button>
-                        </div>
-                    </div>
-                ))}
-
-                <button
-                    onClick={openAddModal}
-                    className="glass-panel"
-                    style={{
-                        minHeight: '200px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        cursor: 'pointer',
-                        border: '2px dashed rgba(255,255,255,0.1)',
-                        background: 'rgba(255,255,255,0.02)',
-                        color: 'var(--text-muted)',
-                    }}
-                >
-                    <div style={{ fontSize: '3rem', marginBottom: '0.5rem', background: 'var(--primary)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>+</div>
-                    <div style={{ fontWeight: '500' }}>Add Credential</div>
-                </button>
+                {!loading && (
+                    <button
+                        onClick={openAddModal}
+                        className="glass-panel"
+                        style={{
+                            minHeight: '200px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            cursor: 'pointer',
+                            border: '2px dashed rgba(255,255,255,0.1)',
+                            background: 'rgba(255,255,255,0.02)',
+                            color: 'var(--text-muted)',
+                        }}
+                    >
+                        <div style={{ fontSize: '3rem', marginBottom: '0.5rem', background: 'var(--primary)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>+</div>
+                        <div style={{ fontWeight: '500' }}>Add Credential</div>
+                    </button>
+                )}
             </div>
 
             <CredentialModal
